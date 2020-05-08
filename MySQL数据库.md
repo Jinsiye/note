@@ -55,3 +55,7 @@
 
 解决方法：Innodb通过回滚持有最少行级排他锁的事务，便可以打破死锁。
 
+#### 多版本并发控制（MVCC）
+
+start_version <= transaction_version <= delete_version
+
