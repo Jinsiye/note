@@ -4,13 +4,13 @@
 
 在Innodb中，同时支持表锁和行锁，表锁和行锁均有两种：**共享锁**和**排他锁**，以行锁为例：
 
-**共享锁（shared lock）**：
+​	**共享锁（shared lock）**：
 
-​	共享锁允许获取到锁的事务对行数据进行读取。
+​		共享锁允许获取到锁的事务对行数据进行读取。
 
-**排他锁（exclusive lock）**：
+​	**排他锁（exclusive lock）**：
 
-​	排他锁允许获取到锁的事务对行数据进行删除和更新。
+​		排他锁允许获取到锁的事务对行数据进行删除和更新。
 
 共享锁和排他锁的互斥关系如表所示：
 
@@ -46,7 +46,65 @@
 | S    | 冲突 | 冲突 | 兼容 | 兼容 |
 | IS   | 冲突 | 兼容 | 兼容 | 兼容 |
 
+**Record Lock**：recordlock是索引上面的锁，例如，select c1 from t where c1 = 10 for update；该语句阻止其他事务对c1 = 10 这条记录进行增、删、改的操作。
 
+**Gap Locks（间隙锁）**：间隙锁锁住了索引之间的间隙，或者是锁住了第一个值之前的间隙或者最后一个值后面的间隙。例如：select c1 from t where c1 between 10 and 20 for update; 如果此时想插入c1 = 15，会被阻塞，不管有没有15这个值，因为间隙锁锁住了10-20之间的间隙。**间隙锁是共存的**（？），一个事务获取到的间隙锁，另一个事务也可以获取完全一样的间隙锁。
+
+**Next-Key Locks**：next-key lock是索引上record lock和索引前gap lock的混合体。Innodb的行级锁就是以这样的方式体现。
+
+**Insert Intention Locks**：
+
+**AUTO-INC Locks**：
+
+**不同sql语句使用到的锁：**
+
+具体参考：
+
+[官方文档]: https://dev.mysql.com/doc/refman/5.7/en/innodb-locks-set.html
+
+1. select...from：一致性读，读取数据库的一个快照，不会设置锁，除非数据库的隔离级别是SERIALIZABLE。对于SERIALIZABLE隔离级别，在搜索过程中遇到的每一个记录，就会加上一个共享间隙锁。
+2. select...for update：在搜索过程中遇到的每一个记录，就会加上一个排他间隙锁。
+3. select...lock in share mode：在搜索过程中遇到的每一个一个记录，都会加上一个共享间隙锁。
+4. update...where...：在搜索过程中遇到的每一个记录，就会加上一个排他间隙锁。
+5. delete from...where...：在搜索过程中遇到的每一个记录，就会加上一个排他间隙锁。
+6. insert：在被插入的行中加上排他锁，该排他锁不是间隙锁，而实index-record lock。
+
+mvcc可以避免幻读吗？这要看幻读怎么理解，如果单纯的读取，MVCC可以避免，具体如下：
+
+创建空表table t:
+
+执行过程：
+
+| 事务A                                 | 事务B                              |
+| ------------------------------------- | ---------------------------------- |
+| begin                                 | begin                              |
+| select * from t;(empty)               |                                    |
+|                                       | insert into t values (3,3);commit; |
+| select * from t; (empyt)              |                                    |
+| update t set a = 10;（1 row effects） |                                    |
+| commit;                               |                                    |
+
+也就是说，事务B插入数据提交之后，事务A select的返回结果跟第一次select的返回结果一致，但是事务A更新的时候，会发现一行受到影响，这样不知道算不算是一种幻读。此处引用官方的说法：
+
+> Note
+>
+> The snapshot of the database state applies to [`SELECT`](https://dev.mysql.com/doc/refman/5.7/en/select.html) statements within a transaction, not necessarily to [DML](https://dev.mysql.com/doc/refman/5.7/en/glossary.html#glos_dml) statements. If you insert or modify some rows and then commit that transaction, a [`DELETE`](https://dev.mysql.com/doc/refman/5.7/en/delete.html) or [`UPDATE`](https://dev.mysql.com/doc/refman/5.7/en/update.html) statement issued from another concurrent `REPEATABLE READ` transaction could affect those just-committed rows, even though the session could not query them. If a transaction does update or delete rows committed by a different transaction, those changes do become visible to the current transaction. For example, you might encounter a situation like the following:
+>
+> ```mysql
+> SELECT COUNT(c1) FROM t1 WHERE c1 = 'xyz';
+> -- Returns 0: no rows match.
+> DELETE FROM t1 WHERE c1 = 'xyz';
+> -- Deletes several rows recently committed by other transaction.
+> 
+> SELECT COUNT(c2) FROM t1 WHERE c2 = 'abc';
+> -- Returns 0: no rows match.
+> UPDATE t1 SET c2 = 'cba' WHERE c2 = 'abc';
+> -- Affects 10 rows: another txn just committed 10 rows with 'abc' values.
+> SELECT COUNT(c2) FROM t1 WHERE c2 = 'cba';
+> -- Returns 10: this txn can now see the rows it just updated.
+> ```
+
+如果要真正解决幻读，那么需要使用locking read，也就是再select后面加上 for update 或者 lock in share mode。此时的查询会给扫描到的记录加上netx-key record，防止其他事务在这个间隙中update、delete、insert进去。
 
 #### 事务
 
@@ -57,8 +115,6 @@
 隔离性（Isolation）：一个事务所作的修改在最终提交之前，对其他事务是不可见的。
 
 持久性（durability）：一旦事务提交，则其所作的修改就会永久保存在数据库中。
-
-
 
 #### 隔离级别
 
